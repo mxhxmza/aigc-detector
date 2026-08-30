@@ -196,6 +196,44 @@ hard-negative crops are scored there too (0 errors).
 **+0.0004**, worst-case accuracy 0.983, ECE ≤ 0.011 throughout. Per-family
 final score **0.9997**. Full grid in `results/robustness_table.md`.
 
+### WildFake reference benchmark (never trained on)
+
+The numbers above are in-distribution. The track's demonstration subset
+(`techjam-aigc/wildfake-eval-subset`) is a different corpus entirely — COCO
+and LAION reals against DALL·E 3, Midjourney v5, SDXL and GigaGAN — so it
+measures transfer, and it is the more honest read of what this model does in
+the wild. `python scripts/eval_wildfake.py` reproduces it; nothing from it
+ever enters `data/manifest.csv`.
+
+| config | n | AUC | balanced acc @0.5 | @best threshold |
+|---|---|---|---|---|
+| `default` (spec-faithful) | 13,841 | 0.962 | 0.828 | 0.899 |
+| `normalized` | 13,841 | 0.940 | 0.771 | 0.875 |
+| **`laion_matched`** | 7,652 | **0.910** | 0.802 | 0.848 |
+| `cross_generator` | 5,494 | 0.792 | 0.709 | 0.755 |
+
+**Quote `laion_matched`, not `default`.** In `default` every COCO real is
+exactly 200×200 and no DALL·E fake is, so `img.size == (200, 200)` scores
+AUC **1.000** with no model at all. The eval script measures that shortcut
+next to our score so the two can never be confused.
+
+Two things this benchmark makes plain that the in-distribution numbers hide:
+
+1. **Diffusion transfers, GANs do not.** Per generator: DALL·E 3 **0.923**,
+   Midjourney v5 **0.922**, SDXL **0.823**, GigaGAN **0.500** — chance, with
+   2% recall. Training saw only diffusion synthetics, and the frequency
+   artifacts a GAN leaves are simply not the ones this model learned. Not a
+   degradation, an absence.
+2. **The residual gap is calibration, not detection.** False positives stay
+   excellent out of distribution (0.46% on COCO, 2.5% on LAION), but AI
+   recall falls to 44–67% at the 0.5 threshold. Sweeping the threshold
+   recovers 5–10 points of balanced accuracy, and ECE rises to 0.18–0.40 —
+   the ranking survives the distribution shift, the temperature does not.
+   Re-fitting temperature per deployment domain is the fix.
+
+Full tables, per-generator and per-source, in `results/wildfake_benchmark.md`;
+raw per-image scores in `results/wildfake_scores.npz`.
+
 ### 3.2 Web interface
 
 `app.py` is a local single-page app: drag in an image, get the calibrated
@@ -267,15 +305,23 @@ pairs. `--backbone ViT-L-14` is one flag away and still under the cap.
 2. **Finite augmentation views.** Training uses K=4 fixed views per image
    rather than fresh random augmentation each epoch, a consequence of caching
    features. Larger K trades disk for diversity.
-3. **One dataset.** SID_Set covers real photos plus a fixed set of
-   synthesis methods. A generator released next month is out of distribution;
-   the honest way to measure that is to test on it, which is future work.
-4. **Incidental degradation, not adversarial.** The six transforms model a
+3. **Diffusion only — GANs are a blind spot, and it is measured.** SID_Set's
+   synthetics are diffusion-based, and on the WildFake benchmark that boundary
+   is stark: DALL·E 3 0.923 AUC, Midjourney v5 0.922, SDXL 0.823, **GigaGAN
+   0.500** — chance, 2% recall. A GAN leaves different frequency artifacts
+   than a diffusion model and this detector never saw them. Fixing it means
+   GAN images in training, not a better architecture.
+4. **Confidence does not survive a distribution shift.** Temperature is fitted
+   on SID_Set, so ECE stays ≤0.011 in-distribution but rises to 0.18–0.40 on
+   WildFake, where recall at the 0.5 threshold drops to 44–67% even though
+   AUC holds at 0.91. The ranking transfers; the operating point does not.
+   Any real deployment should re-fit temperature on its own traffic.
+5. **Incidental degradation, not adversarial.** The six transforms model a
    redistribution pipeline, not an adversary deliberately evading detection.
-5. **Tampered images are called real.** A photo with a small AI-edited region
+6. **Tampered images are called real.** A photo with a small AI-edited region
    is treated as authentic. That is the right product call for "is this
    photo real", but it means localised manipulation is not surfaced.
-6. **False positives are accusations.** Calling a real photograph synthetic
+7. **False positives are accusations.** Calling a real photograph synthetic
    has a human cost. At this accuracy the appropriate deployment is a
    human-review queue, not automated enforcement.
 
@@ -306,6 +352,7 @@ scripts/verify_env.py           sm_120 / CUDA check -- run first
 scripts/fetch_sid_set.py        stream a balanced SID_Set subset to disk
 scripts/build_dataset.py        split + organise -> data/{train,test} + manifest.csv
 scripts/add_hard_negatives.py   mine + augment hard real photos into the train set
+scripts/eval_wildfake.py        WildFake reference benchmark (eval only, never trained on)
 scripts/make_smoke_data.py      tiny synthetic dataset for the plumbing test
 src/data/manifest.py            the manifest: image_path, label, kind, split
 src/transforms/degradations.py  the six specified transforms (C-5)
