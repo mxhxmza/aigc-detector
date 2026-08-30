@@ -8,7 +8,11 @@ venv/
 # Rebuilt by the scripts in scripts/ -- the raw + organised dataset, the
 # cached CLIP features, and the smoke-test throwaways. checkpoints/full.pt
 # and results/ ARE committed: they are small and they are the deliverables.
-data/
-features/
-features_smoke/
-checkpoints_smoke/
+#
+# The leading slash is load-bearing. Unanchored, `data/` and `features/` also
+# match `src/data/` and `src/features/`, which silently kept five source files
+# out of the repo and left every clone unable to import the package.
+/data/
+/features/
+/features_smoke/
+/checkpoints_smoke/

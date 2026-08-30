@@ -169,6 +169,9 @@ PAGE = r"""<!doctype html>
   #drop.hot { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
   #drop strong { color: var(--accent); }
   #drop small { display: block; color: var(--muted); margin-top: 6px; }
+  kbd { font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px;
+    padding: 2px 5px; color: var(--muted); white-space: nowrap; }
   input[type=file] { display: none; }
   .actions { display: flex; gap: 10px; margin-top: 12px; }
   button { flex: 1; font: inherit; padding: 10px 14px; border-radius: 10px;
@@ -214,7 +217,7 @@ PAGE = r"""<!doctype html>
 
   <div class="card">
     <div id="drop">
-      <strong>Click to choose an image</strong> or drop it here
+      <strong>Click to choose an image</strong>, drop it here, or paste with <kbd id="pasteKey">Ctrl+V</kbd>
       <small>JPEG, PNG, WebP &mdash; up to 25&nbsp;MB</small>
     </div>
     <div class="actions">
@@ -278,6 +281,27 @@ drop.addEventListener('drop', ev => {
 });
 file.addEventListener('change', () => { if (file.files.length) handle(file.files[0]); });
 camFallback.addEventListener('change', () => { if (camFallback.files.length) handle(camFallback.files[0]); });
+
+// Paste from the clipboard (screenshot, or an image copied from a web page).
+// Bound to the document so it works wherever focus happens to be. A pasted
+// screenshot has no filename, so give it one for the result readout.
+if (navigator.platform && /Mac/i.test(navigator.platform)) {
+  document.getElementById('pasteKey').textContent = '⌘V';
+}
+document.addEventListener('paste', ev => {
+  const items = (ev.clipboardData || {}).items || [];
+  for (const item of items) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      const blob = item.getAsFile();
+      if (blob) {
+        ev.preventDefault();
+        const ext = (item.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        handle(new File([blob], blob.name || `pasted.${ext}`, { type: item.type }));
+      }
+      return;
+    }
+  }
+});
 
 // Live camera. getUserMedia needs a secure context (localhost counts, a LAN
 // IP over plain http does not) -- fall back to the OS camera picker, which on
