@@ -102,8 +102,9 @@ def main() -> int:
     model.eval()
 
     records = [r for r in M.read(args.manifest) if r.split == args.split]
-    if args.limit:
-        records = records[: args.limit]
+    if args.limit and len(records) > args.limit:
+        rng = np.random.default_rng(0)
+        records = [records[i] for i in rng.permutation(len(records))[: args.limit]]
 
     images, kept = [], []
     for r in records:

@@ -1,22 +1,23 @@
 {
   "fp_paths": [
     "data\\test\\real\\real_886ca62efcc6f42e.png",
+    "data\\test\\real\\tampered_tampered_08305.png",
+    "data\\test\\real\\tampered_tampered_32504.png",
+    "data\\test\\real\\tampered_tampered_60360.png",
     "data\\test\\real\\real_5b8897dff3bfcbed.png",
-    "data\\test\\real\\tampered_tampered_37711.png",
-    "data\\test\\real\\tampered_tampered_32504.png"
+    "data\\test\\real\\real_fddfff6b0fc51285.png",
+    "data\\test\\real\\tampered_tampered_37711.png"
   ],
   "fn_paths": [
-    "data\\test\\ai\\synthetic_full_synthetic_050427.png",
-    "data\\test\\ai\\synthetic_full_synthetic_054513.png",
-    "data\\test\\ai\\synthetic_full_synthetic_067742.png",
-    "data\\test\\ai\\synthetic_full_synthetic_051990.png",
-    "data\\test\\ai\\synthetic_full_synthetic_062439.png"
+    "data\\test\\ai\\synthetic_full_synthetic_036686.png",
+    "data\\test\\ai\\synthetic_full_synthetic_008520.png",
+    "data\\test\\ai\\synthetic_full_synthetic_041859.png"
   ],
   "fp_by_kind": {
-    "real": 2,
-    "tampered": 2
+    "real": 3,
+    "tampered": 4
   },
   "fn_by_kind": {
-    "synthetic": 5
+    "synthetic": 3
   }
 }

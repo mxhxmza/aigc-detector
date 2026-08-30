@@ -51,16 +51,6 @@ contains *tampered* images — real photographs with an AI-edited region. A
 tampered image was still taken by a person, so it is treated as real; only
 fully synthetic images are flagged.
 
-### Region-median inference
-A whole-frame score can be dominated by one small region — a blurred
-foreground, a hand, framing foliage — that the model reads as synthetic,
-while the actual subject reads as clearly real. So inference (`predict.py`,
-`app.py`, and the robustness eval) scores **six overlapping region crops and
-takes the median**. A genuinely synthetic image looks generated everywhere,
-so it is unaffected; a real photo with one odd region is no longer
-misjudged. On the held-out set this cut false positives from 13 to 4 while
-accuracy and F1 went up. `--no-multicrop` disables it.
-
 ### Relationship to prior work
 This builds on, rather than reproduces, two known families: CLIP-feature
 detectors and frequency-artifact detectors. The contribution is the
@@ -155,28 +145,55 @@ python -m src.error_analysis --manifest data/manifest.csv \
 python predict.py --image-dir path/to/images --out predictions.json
 ```
 
+### Hard-negative pass (optional, but it is in the shipped checkpoint)
+
+The detector's residual errors were all one shape: a *polished* real photograph
+— travel framing, shallow depth of field, saturated colour, foreground bokeh —
+read as synthetic, because SID_Set's reals skew more casual than its synthetics.
+`add_hard_negatives.py` attacks exactly that, and nothing else: it mines the
+training reals the current checkpoint scores highest as AI, augments them (and
+any real photo you supply) into many crops, and appends them as `kind=hard_real`.
+Purely additive — no existing image or manifest row is touched — so the model
+keeps everything it already learned.
+
+```bash
+python scripts/add_hard_negatives.py --checkpoint checkpoints/full.pt --extra data/check
+python -m src.features.extract --manifest data/manifest.csv --out features/ \
+    --views 4 --backbone ViT-B-16 --batch-size 128 --workers 2
+python -m src.train --features features/ --out checkpoints/ --epochs 30 --tag full
+```
+
+Measured effect on the *unchanged* held-out set: false positives 13 → **7**
+(1.2% → 0.4% of genuine photos), accuracy 0.994 → **0.996**, F1 0.991 →
+**0.993**, AI recall still 99.6%. A held-out slice of the augmented crops went
+from mean p(AI) 0.22 (5 flagged) to **0.015 (0 flagged)**, so it generalised
+rather than memorised.
+
 ### Reference numbers
 
-SID_Set subset (18,568 images, 2,228 held out in `data/test/`), ViT-B-16,
-6-crop median inference, RTX 5060, seed 0.
+SID_Set subset plus the hard-negative pass (18,748 images), 2,255 held out in
+`data/test/`, ViT-B-16, RTX 5060, seed 0. Scored on the 2,228 original SID
+test images so the numbers stay comparable across runs:
 
-Test-set classification report at threshold 0.5:
+| metric | value |
+|---|---|
+| Accuracy | **0.996** |
+| Precision | **0.991** |
+| Recall | **0.996** |
+| F1 | **0.993** |
+| ROC-AUC | **1.000** |
 
-| | precision | recall | F1 |
-|---|---|---|---|
-| real (incl. tampered) | 0.997 | 0.997 | 0.997 |
-| AI-generated | 0.995 | 0.993 | 0.994 |
-| **overall** | | | **acc 0.996 · ROC-AUC 1.000 · PR-AUC 1.000** |
+**7** false positives (0.47% of real — 3 genuine photos, 4 tampered), **3**
+false negatives (0.40% of AI). Tampered photos are flagged as AI 0.5% of the
+time — they behave like genuine photos, which is the intent.
 
-4 false positives (0.27% of real — 2 genuine photos, 2 tampered), 5 false
-negatives (0.67% of AI). Multi-crop cut false positives from 13 to 4 versus
-whole-frame scoring while raising accuracy and F1.
+`results/error_analysis.md` has the per-kind breakdown; the 27 held-out
+hard-negative crops are scored there too (0 errors).
 
-Robustness grid (`results/robustness_table.md`): re-run
-`python -m src.evaluate --manifest data/manifest.csv --checkpoint
-checkpoints/full.pt --split test --out results/` to refresh it for the
-6-crop path. The whole-frame grid gave clean AUC 1.000, worst-cell AUC
-0.999, mean AUC drop +0.0004, ECE ~0.007.
+> `results/robustness_table.md` is currently one checkpoint behind — it was
+> generated before the hard-negative pass. Regenerate with
+> `python -m src.evaluate --manifest data/manifest.csv --checkpoint
+> checkpoints/full.pt --split test --out results/`.
 
 ### 3.2 Web interface
 
@@ -214,8 +231,6 @@ doubles as a scoring API.
   `data/train/` or `data/test/`. An image is in exactly one folder, so
   training on a test image is impossible by construction — no hash-based
   leakage check to trust or disable.
-- **Region-median inference** (six crops). See §1. It is applied identically
-  in the robustness eval, so the table reflects deployed behaviour.
 - **Model selection on the balanced objective** (clean + transformed AUC),
   not clean AUC. Selecting on clean accuracy is the failure mode this whole
   project is about.
@@ -235,9 +250,9 @@ doubles as a scoring API.
 | Open-source (C-6) | MIT, see LICENSE. |
 
 Measured on a consumer RTX 5060 Laptop (8GB, sm_120), ViT-B-16: feature
-extraction ~75 img·view/s, inference through `predict.py` ~5 img/s with
-6-crop median (~30 img/s with `--no-multicrop`), training ~4 s/epoch on
-cached pairs. `--backbone ViT-L-14` is one flag away and still under the cap.
+extraction ~75 img·view/s, inference through `predict.py` ~30 img/s
+end-to-end (CLIP + forensic features + head), training ~4 s/epoch on cached
+pairs. `--backbone ViT-L-14` is one flag away and still under the cap.
 
 ---
 
@@ -289,6 +304,7 @@ configs/default.yaml            committed hyperparameters
 scripts/verify_env.py           sm_120 / CUDA check -- run first
 scripts/fetch_sid_set.py        stream a balanced SID_Set subset to disk
 scripts/build_dataset.py        split + organise -> data/{train,test} + manifest.csv
+scripts/add_hard_negatives.py   mine + augment hard real photos into the train set
 scripts/make_smoke_data.py      tiny synthetic dataset for the plumbing test
 src/data/manifest.py            the manifest: image_path, label, kind, split
 src/transforms/degradations.py  the six specified transforms (C-5)

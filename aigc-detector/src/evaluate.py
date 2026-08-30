@@ -40,22 +40,17 @@ from .transforms.degradations import evaluation_grid
 
 
 def score_images(model, backbone, preprocess, images, device, batch_size=32,
-                 forensic_mu=None, forensic_sd=None, multicrop=True):
-    """Score PIL images with the trained detector, matching deployed inference.
+                 forensic_mu=None, forensic_sd=None):
+    """Score PIL images with the trained detector.
 
     `forensic_mu` / `forensic_sd` MUST be the tensors saved in the checkpoint:
     training standardises the forensic features globally with train-split
     statistics, so the model only ever saw standardised inputs. Feeding raw
     features here is a silent train/test skew.
-
-    `multicrop` mirrors `src.inference.Scorer` -- six region crops per image,
-    median score -- so the robustness table reflects what predict.py / app.py
-    actually do.
     """
     import torch
 
     from .features import frequency as FQ
-    from .inference import region_crops
 
     probs: list[float] = []
     buf_t, buf_f = [], []
@@ -78,15 +73,12 @@ def score_images(model, backbone, preprocess, images, device, batch_size=32,
         buf_f.clear()
 
     for img in images:
-        for v in (region_crops(img) if multicrop else [img]):
-            buf_t.append(preprocess(v))
-            buf_f.append(FQ.extract(v))
-            if len(buf_t) >= batch_size:
-                flush()
+        buf_t.append(preprocess(img))
+        buf_f.append(FQ.extract(img))
+        if len(buf_t) >= batch_size:
+            flush()
     flush()
-
-    k = 6 if multicrop else 1
-    return np.median(np.asarray(probs).reshape(len(images), k), axis=1)
+    return np.asarray(probs)
 
 
 def render_table(rows: list[dict], auc_clean: float) -> str:
@@ -112,7 +104,9 @@ def main() -> int:
     ap.add_argument("--checkpoint", required=True, type=Path)
     ap.add_argument("--split", default="test")
     ap.add_argument("--out", type=Path, default=Path("results"))
-    ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--limit", type=int, default=0,
+                    help="evaluate on a balanced random subsample of this size "
+                         "(the full grid over a large test set is slow)")
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--device", default="auto")
     args = ap.parse_args()
@@ -146,8 +140,14 @@ def main() -> int:
     model.eval()
 
     eval_recs = [r for r in M.read(args.manifest) if r.split == args.split]
-    if args.limit:
-        eval_recs = eval_recs[: args.limit]
+    if args.limit and len(eval_recs) > args.limit:
+        rng = np.random.default_rng(0)
+        pos = [r for r in eval_recs if r.label == 1]
+        neg = [r for r in eval_recs if r.label == 0]
+        k = args.limit // 2
+        pick = lambda xs: [xs[i] for i in rng.permutation(len(xs))[:min(k, len(xs))]]
+        eval_recs = pick(pos) + pick(neg)
+        print(f"balanced subsample: {len(eval_recs)} of the {len(pos) + len(neg)} test images")
     if not eval_recs:
         raise SystemExit(f"no records in split '{args.split}'")
 

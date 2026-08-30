@@ -42,8 +42,7 @@ def get_scorer() -> Scorer:
     if _scorer is None:
         with _scorer_lock:
             if _scorer is None:
-                _scorer = Scorer(_settings["checkpoint"], device=_settings["device"],
-                                 multicrop=_settings.get("multicrop", True))
+                _scorer = Scorer(_settings["checkpoint"], device=_settings["device"])
     return _scorer
 
 
@@ -74,7 +73,6 @@ def info() -> JSONResponse:
         "device": s.device,
         "uses_forensic_branch": s.config.get("use_forensic", True),
         "uses_degradation_gate": s.config.get("use_gate", True),
-        "multicrop": s.multicrop,
         "temperature": round(s.temperature, 4),
         "total_parameters": s.params["total"],
     })
@@ -117,9 +115,6 @@ def main() -> int:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
-    ap.add_argument("--no-multicrop", action="store_true",
-                    help="score the whole frame only (faster, less robust to "
-                         "framed / foreground-heavy photos)")
     args = ap.parse_args()
 
     if not args.checkpoint.exists():
@@ -130,7 +125,6 @@ def main() -> int:
 
     _settings["checkpoint"] = args.checkpoint
     _settings["device"] = args.device
-    _settings["multicrop"] = not args.no_multicrop
 
     print(f"loading model from {args.checkpoint} ...", flush=True)
     s = get_scorer()
@@ -322,8 +316,7 @@ shootBtn.addEventListener('click', () => {
 fetch('/api/info').then(r => r.json()).then(d => {
   document.getElementById('foot').textContent =
     `model: ${d.checkpoint} · backbone ${d.backbone} · ${d.device} · ` +
-    `temperature ${d.temperature}` + (d.multicrop ? ' · 6-crop median' : '') +
-    ` · ${(d.total_parameters/1e6).toFixed(1)}M params`;
+    `temperature ${d.temperature} · ${(d.total_parameters/1e6).toFixed(1)}M params`;
 }).catch(() => {});
 
 async function handle(f) {

@@ -111,7 +111,6 @@ def run_model(
     checkpoint: Path,
     batch_size: int,
     device_arg: str,
-    multicrop: bool = True,
 ) -> tuple[list[float], list[str]]:
     """Real inference: frozen backbone + forensic features + gated head.
 
@@ -132,7 +131,7 @@ def run_model(
         )
 
     try:
-        scorer = Scorer(checkpoint, device=device_arg, multicrop=multicrop)
+        scorer = Scorer(checkpoint, device=device_arg)
     except ValueError as exc:
         raise SystemExit(f"error: {exc}")
 
@@ -174,9 +173,6 @@ def main() -> int:
     ap.add_argument("--checkpoint", type=Path, default=Path("checkpoints/full.pt"))
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
-    ap.add_argument("--no-multicrop", action="store_true",
-                    help="score the whole frame only (6x faster, ~1pp less "
-                         "accurate, more false positives on framed photos)")
     ap.add_argument("--format", default="list", choices=["list", "dict"],
                     help="JSON shape: list of {image_path, pred} or {path: pred}")
     ap.add_argument("--binary", action="store_true",
@@ -203,8 +199,7 @@ def main() -> int:
         print("STUB MODE -- random scores. Do not submit results from this.")
         scores, failed = run_stub(paths, args.seed)
     else:
-        scores, failed = run_model(paths, args.checkpoint, args.batch_size,
-                                   args.device, multicrop=not args.no_multicrop)
+        scores, failed = run_model(paths, args.checkpoint, args.batch_size, args.device)
 
     def render(p: Path) -> str:
         if args.relative:
