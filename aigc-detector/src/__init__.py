@@ -3,7 +3,7 @@
 TikTok TechJam 2026, Problem Statement #5.
 
 Package layout:
-    data/        manifest, generator-disjoint splits, C-4 leakage guard
+    data/        the manifest (single source of truth: image_path, label, split)
     transforms/  the six specified degradations + random sampler
     features/    frozen-backbone extraction, hand-designed forensic features
     models/      two-branch detector, degradation gate, calibration

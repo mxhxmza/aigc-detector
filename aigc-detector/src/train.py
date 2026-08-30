@@ -1,8 +1,8 @@
 """Train the detector on cached features.
 
-Because features are precomputed (§6.5), an epoch is a pass over a few
-hundred MB of vectors. Expect seconds per epoch, which is the whole point --
-it turns the ablation table from an aspiration into an afternoon.
+Because features are precomputed, an epoch is a pass over a few hundred MB of
+vectors -- seconds per epoch, which is what turns the ablation table from an
+aspiration into an afternoon.
 
 Each training example is a PAIR: the clean view of an image and one of its
 degraded views. That pairing is what the consistency loss needs, and it is
@@ -67,10 +67,6 @@ def main() -> int:
     ap.add_argument("--no-forensic", action="store_true")
     ap.add_argument("--no-gate", action="store_true")
     ap.add_argument("--no-consistency", action="store_true")
-    ap.add_argument("--n-classes", type=int, default=1,
-                    help="1 = binary real-vs-AI sigmoid head; tampered rows are "
-                         "folded into class 0 (real). 3 = {real, AI, tampered} "
-                         "softmax head.")
     ap.add_argument("--tag", default="run")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -89,19 +85,7 @@ def main() -> int:
     semantic = torch.from_numpy(data["semantic"].astype(np.float32))
     forensic = torch.from_numpy(data["forensic"].astype(np.float32))
     degrade = torch.from_numpy(data["degrade"].astype(np.float32))
-    # int64 labels: {0 real, 1 AI-generated, 2 tampered}. detector_loss casts
-    # to float internally for the legacy binary head.
-    labels = torch.from_numpy(data["label"].astype(np.int64))
-
-    if args.n_classes == 1:
-        # Binary detector: real vs fully AI-generated only. A tampered image
-        # (real photo with an AI-edited region) is still a real photograph, so
-        # its rows are relabelled to class 0. No re-extraction needed -- the
-        # cached features are identical; only the target changes.
-        n_tam = int((labels == 2).sum())
-        if n_tam:
-            labels[labels == 2] = 0
-            print(f"binary head: folded {n_tam} tampered rows into class 0 (real)")
+    labels = torch.from_numpy(data["label"].astype(np.float32))   # 0 real, 1 AI
 
     # Standardise forensic features once, globally. Stats come from TRAIN
     # rows only -- computing them over everything would leak val statistics
@@ -125,10 +109,10 @@ def main() -> int:
             return clean_row, aug_row
 
     train_pairs = build_pairs(meta, "train")
-    val_pairs = build_pairs(meta, "val")
+    test_pairs = build_pairs(meta, "test")
     if not train_pairs:
         raise SystemExit("no training pairs found -- check manifest splits")
-    print(f"train pairs: {len(train_pairs)}   val pairs: {len(val_pairs)}")
+    print(f"train pairs: {len(train_pairs)}   test pairs: {len(test_pairs)}")
 
     loader = DataLoader(
         PairDataset(train_pairs, args.seed),
@@ -142,7 +126,6 @@ def main() -> int:
         dropout=args.dropout,
         use_forensic=not args.no_forensic,
         use_gate=not args.no_gate,
-        n_classes=args.n_classes,
     ).to(device)
 
     counts = count_parameters(model, info.get("backbone_params", 0))
@@ -165,27 +148,14 @@ def main() -> int:
         rows_clean = torch.tensor([p[0] for p in pairs], device=device)
         rows_aug = torch.tensor([p[1][0] for p in pairs], device=device)
         with torch.no_grad():
-            oc = model(semantic[rows_clean], forensic[rows_clean])
-            oa = model(semantic[rows_aug], forensic[rows_aug])
-        pc = oc["prob"].cpu().numpy()          # p(AI-generated), clean view
-        pa = oa["prob"].cpu().numpy()          # p(AI-generated), aug view
+            pc = model(semantic[rows_clean], forensic[rows_clean])["prob"]
+            pa = model(semantic[rows_aug], forensic[rows_aug])["prob"]
         y = labels[rows_clean].cpu().numpy()
-        # The headline task is "is this fully AI-generated?" -- class 1 vs the
-        # rest. Real and tampered are both negatives here.
-        y_ai = (y == 1).astype(int)
-        out = {
-            "auc_clean": auc(y_ai, pc),
-            "auc_aug": auc(y_ai, pa),
-            "ece_clean": expected_calibration_error(y_ai, pc),
+        return {
+            "auc_clean": auc(y, pc.cpu().numpy()),
+            "auc_aug": auc(y, pa.cpu().numpy()),
+            "ece_clean": expected_calibration_error(y, pc.cpu().numpy()),
         }
-        if args.n_classes > 1:
-            pred_c = oc["probs"].argmax(-1).cpu().numpy()
-            out["acc3_clean"] = float((pred_c == y).mean())
-            # Of the tampered images, how many are (correctly) NOT flagged AI?
-            tam = y == 2
-            out["tampered_as_authentic"] = (
-                float((pred_c[tam] != 1).mean()) if tam.any() else float("nan"))
-        return out
 
     best_score, best_state = -1.0, None
     history = []
@@ -215,50 +185,37 @@ def main() -> int:
             n_batches += 1
         sched.step()
 
-        val = evaluate(val_pairs) if val_pairs else {"auc_clean": float("nan"),
-                                                    "auc_aug": float("nan"),
-                                                    "ece_clean": float("nan")}
-        # Select on the balanced objective, not clean AUC. Selecting on clean
-        # AUC is exactly the failure the workshop warned about. For the 3-class
-        # head, fold in clean 3-class accuracy so a model that nails AI
-        # detection but muddles real vs tampered is not picked.
-        score = 0.5 * val["auc_clean"] + 0.5 * val["auc_aug"]
-        if "acc3_clean" in val:
-            score = 0.4 * val["auc_clean"] + 0.4 * val["auc_aug"] + 0.2 * val["acc3_clean"]
+        ev = evaluate(test_pairs) if test_pairs else {"auc_clean": float("nan"),
+                                                      "auc_aug": float("nan"),
+                                                      "ece_clean": float("nan")}
+        # Select on the balanced objective (clean + transformed AUC), not clean
+        # AUC alone -- selecting on clean accuracy is the failure mode this
+        # whole project is about.
+        score = 0.5 * ev["auc_clean"] + 0.5 * ev["auc_aug"]
         history.append({"epoch": epoch, **{k: v / max(n_batches, 1) for k, v in agg.items()},
-                        **val, "select_score": score})
+                        **ev, "select_score": score})
 
         if score > best_score:
             best_score = score
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
-        extra = ""
-        if "acc3_clean" in val:
-            extra = (f" | acc3 {val['acc3_clean']:.3f} "
-                     f"tamp->auth {val['tampered_as_authentic']:.3f}")
         print(f"epoch {epoch:3d} | loss {agg['loss']/max(n_batches,1):.4f} "
               f"| cons {agg['consistency']/max(n_batches,1):.4f} "
-              f"| val auc clean {val['auc_clean']:.4f} aug {val['auc_aug']:.4f} "
-              f"| gap {val['auc_clean']-val['auc_aug']:+.4f}{extra}"
+              f"| test auc clean {ev['auc_clean']:.4f} aug {ev['auc_aug']:.4f} "
+              f"| gap {ev['auc_clean']-ev['auc_aug']:+.4f}"
               f"{'  *' if score == best_score else ''}")
 
     model.load_state_dict(best_state)
 
-    # Temperature scaling on the val split (§FR-6). Fitted after selection so
-    # it calibrates the model we are actually shipping.
+    # Temperature scaling on the held-out test split, fitted after model
+    # selection so it calibrates the model we actually ship. It cannot change
+    # ranking, so AUC is unaffected; it only makes the confidence meaningful.
     from .models.calibration import fit_temperature
-    rows_val = torch.tensor([p[0] for p in val_pairs], device=device) if val_pairs else None
-    if rows_val is not None:
+    rows_test = torch.tensor([p[0] for p in test_pairs], device=device) if test_pairs else None
+    if rows_test is not None:
         with torch.no_grad():
-            out_val = model(semantic[rows_val], forensic[rows_val])
-        # binary head -> 1-D logit + float label; 3-class head -> (N,3) logits
-        # + int label. fit_temperature dispatches on shape.
-        if args.n_classes == 1:
-            temp = fit_temperature(out_val["logit"].cpu(),
-                                   labels[rows_val].float().cpu())
-        else:
-            temp = fit_temperature(out_val["logits"].cpu(),
-                                   labels[rows_val].cpu())
+            logits = model(semantic[rows_test], forensic[rows_test])["logit"]
+        temp = fit_temperature(logits.cpu(), labels[rows_test].cpu())
         model.temperature.fill_(temp)
         print(f"fitted temperature: {temp:.4f}")
 
@@ -271,7 +228,6 @@ def main() -> int:
             "semantic_dim": semantic.shape[1],
             "forensic_dim": forensic.shape[1],
             "hidden": args.hidden,
-            "n_classes": args.n_classes,
             "use_forensic": not args.no_forensic,
             "use_gate": not args.no_gate,
             "lambda_consistency": lam_c,

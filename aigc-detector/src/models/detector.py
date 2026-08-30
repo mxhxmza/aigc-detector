@@ -90,6 +90,8 @@ class GatedFusion(nn.Module):
 
 
 class Detector(nn.Module):
+    """Binary real-vs-AI detector. One sigmoid logit; `prob` is p(AI-generated)."""
+
     def __init__(
         self,
         semantic_dim: int,
@@ -98,16 +100,10 @@ class Detector(nn.Module):
         dropout: float = 0.1,
         use_forensic: bool = True,
         use_gate: bool = True,
-        n_classes: int = 3,
     ):
         super().__init__()
         self.use_forensic = use_forensic
         self.use_gate = use_gate and use_forensic
-        # n_classes == 1 -> binary sigmoid head (legacy CIFAKE/SID checkpoints).
-        # n_classes == 3 -> softmax over {0: real, 1: AI-generated, 2: tampered}.
-        # The tampered class is trained but folded into "authentic" for the
-        # user-facing verdict; see predict_proba / predict_proba_full.
-        self.n_classes = n_classes
 
         self.semantic_head = mlp([semantic_dim, 512, hidden], dropout=dropout)
 
@@ -124,7 +120,7 @@ class Detector(nn.Module):
             nn.Linear(hidden, hidden // 2),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden // 2, n_classes),
+            nn.Linear(hidden // 2, 1),
         )
 
         # Temperature for post-hoc calibration. Not trained with the model --
@@ -148,51 +144,19 @@ class Detector(nn.Module):
                 fused = 0.5 * (sem + for_feat)
                 gate_w = None
 
-        logits = self.classifier(fused)                       # (B, n_classes)
-        out = {"logits": logits, "degradation": deg_pred, "gate": gate_w}
-
-        if self.n_classes == 1:
-            logit = logits.squeeze(-1)
-            out["logit"] = logit
-            out["prob"] = torch.sigmoid(logit)               # p(AI-generated)
-        else:
-            probs = logits.softmax(dim=-1)
-            out["logit"] = None
-            out["probs"] = probs                              # (B, n_classes)
-            out["prob"] = probs[:, 1]                         # p(AI-generated)
-        return out
-
-    def _temp(self) -> torch.Tensor:
-        return self.temperature.clamp(min=1e-3)
+        logit = self.classifier(fused).squeeze(-1)
+        return {
+            "logit": logit,
+            "prob": torch.sigmoid(logit),                     # p(AI-generated)
+            "degradation": deg_pred,
+            "gate": gate_w,
+        }
 
     @torch.no_grad()
     def predict_proba(self, semantic: torch.Tensor, forensic: torch.Tensor | None = None):
-        """Calibrated p(AI-generated) -- a scalar per image.
-
-        For the 3-class head this is softmax(logits / T)[:, 1], i.e. the
-        probability of the *fully synthetic* class. Real and tampered images
-        both push this toward 0; that is deliberate (see class docstring).
-        Every existing caller -- predict.py, evaluate.py, error_analysis.py --
-        wants exactly this scalar and keeps working unchanged.
-        """
+        """Calibrated p(AI-generated), a scalar per image. Use this at inference."""
         out = self.forward(semantic, forensic)
-        if self.n_classes == 1:
-            return torch.sigmoid(out["logit"] / self._temp())
-        return (out["logits"] / self._temp()).softmax(dim=-1)[:, 1]
-
-    @torch.no_grad()
-    def predict_proba_full(self, semantic: torch.Tensor,
-                           forensic: torch.Tensor | None = None):
-        """Calibrated per-class probabilities, shape (B, n_classes).
-
-        For the binary head this returns (B, 2) as [p(real), p(AI)] so the
-        two heads present the same interface to app.py.
-        """
-        out = self.forward(semantic, forensic)
-        if self.n_classes == 1:
-            p_ai = torch.sigmoid(out["logit"] / self._temp())
-            return torch.stack([1.0 - p_ai, p_ai], dim=-1)
-        return (out["logits"] / self._temp()).softmax(dim=-1)
+        return torch.sigmoid(out["logit"] / self.temperature.clamp(min=1e-3))
 
 
 def count_parameters(model: nn.Module, frozen_backbone_params: int = 0) -> dict:
@@ -234,32 +198,20 @@ def detector_loss(
     disagreement in probability space, where our metric lives, and because
     it is scale-free -- a pair of confident-but-opposite predictions is
     punished much harder than a pair of uncertain ones.
-
-    Works for both heads: a binary sigmoid (labels float in {0,1}) and the
-    3-class softmax (labels long in {0,1,2}), branching on the logit shape.
     """
-    logits_c, logits_a = out_clean["logits"], out_aug["logits"]
+    bce = nn.functional.binary_cross_entropy_with_logits
+    l_cls = 0.5 * (bce(out_clean["logit"], labels) + bce(out_aug["logit"], labels))
 
-    if logits_c.shape[-1] == 1:
-        bce = nn.functional.binary_cross_entropy_with_logits
-        lc, la = logits_c.squeeze(-1), logits_a.squeeze(-1)
-        l_cls = 0.5 * (bce(lc, labels.float()) + bce(la, labels.float()))
-        p_clean = torch.sigmoid(lc).clamp(1e-6, 1 - 1e-6)
-        p_aug = torch.sigmoid(la).clamp(1e-6, 1 - 1e-6)
+    p_clean = torch.sigmoid(out_clean["logit"]).clamp(1e-6, 1 - 1e-6)
+    p_aug = torch.sigmoid(out_aug["logit"]).clamp(1e-6, 1 - 1e-6)
 
-        def _kl(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
-            return (p * (p / q).log() + (1 - p) * ((1 - p) / (1 - q)).log()).mean()
+    def _kl(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+        return (p * (p / q).log() + (1 - p) * ((1 - p) / (1 - q)).log()).mean()
 
-        l_cons = _kl(p_clean.detach(), p_aug)
-    else:
-        y = labels.long()
-        l_cls = 0.5 * (F.cross_entropy(logits_c, y) + F.cross_entropy(logits_a, y))
-        p_clean = logits_c.softmax(-1).clamp_min(1e-6)
-        p_aug = logits_a.softmax(-1).clamp_min(1e-6)
-        # KL(clean || aug), detached clean view as the target -- same rationale
-        # as the binary case, generalised to a categorical distribution.
-        l_cons = (p_clean.detach()
-                  * (p_clean.detach().log() - p_aug.log())).sum(-1).mean()
+    # Detach the clean view: the clean prediction is the target the augmented
+    # view moves toward, not the other way round. Without this the model can
+    # trivially satisfy the loss by making both views equally uncertain.
+    l_cons = _kl(p_clean.detach(), p_aug)
 
     l_deg = torch.zeros((), device=labels.device)
     if out_clean["degradation"] is not None:

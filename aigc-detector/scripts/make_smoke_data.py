@@ -1,16 +1,18 @@
 """Generate a tiny synthetic dataset so the pipeline can be run end-to-end.
 
-This is NOT training data. It exists so that `build_manifest -> extract ->
+This is NOT training data. It exists so that `build_dataset -> extract ->
 train -> evaluate -> predict` can be exercised in a couple of minutes on a
-laptop, without downloading 40GB of WildFake first. The "real" class carries
-1/f spectral falloff plus per-pixel sensor noise; the "fake" class is
-generated at low resolution and bicubically upsampled, which plants the
-periodic spectral artifact the forensic branch is designed to find.
+laptop, without downloading SID_Set first. The "real" class carries 1/f
+spectral falloff plus per-pixel sensor noise; the "fake" class is generated
+at low resolution and bicubically upsampled, which plants the periodic
+spectral artifact the forensic branch is designed to find.
 
-Any real result must come from real datasets. Use this only to verify plumbing.
+Any real result must come from the real dataset. Use this only to verify plumbing.
 
 Usage:
-    python scripts/make_smoke_data.py --out data/smoke --n-real 120 --n-fake 120
+    python scripts/make_smoke_data.py --out data/smoke_raw
+    python scripts/build_dataset.py --raw data/smoke_raw --out data/smoke \
+        --manifest data/smoke/manifest.csv
 """
 
 from __future__ import annotations

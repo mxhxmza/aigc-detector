@@ -1,4 +1,4 @@
-"""Fetch a balanced subset of SID_Set to disk in the layout build_manifest wants.
+"""Fetch a balanced subset of SID_Set to disk for scripts/build_dataset.py.
 
 SID_Set (https://huggingface.co/datasets/saberzl/SID_Set) is 140 GB of
 1024px images -- 210k train + 30k val, labelled:
@@ -17,8 +17,8 @@ PNG at <=512px under:
     <out>/fake/full_synthetic/<img_id>.png            label 1
     <out>/fake/tampered/<img_id>.png                  label 2  (--include-tampered)
 
-`build_manifest.py --sid-set <out>` picks these up directly; the
-`full_synthetic` / `tampered` directory names become the `generator` column.
+`build_dataset.py --raw <out>` picks these up directly, splits them into
+train/ and test/ folders, and folds `tampered` into the real class.
 
 Two deliberate normalisations, both to stop the model learning the source
 instead of the label:
@@ -34,8 +34,7 @@ Resumable at two levels: HF caches partial shard downloads, and img_ids
 already written are skipped.
 
 Usage:
-    python scripts/fetch_sid_set.py --out data/sid_set --split train --per-class 9000
-    python scripts/fetch_sid_set.py --out data/sid_set_val --split validation --per-class 1500
+    python scripts/fetch_sid_set.py --out data/sid_set --per-class 10000 --include-tampered
 """
 
 from __future__ import annotations

@@ -2,25 +2,13 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.DS_Store
+.ipynb_checkpoints/
+
+# Rebuilt by the scripts in scripts/ -- the raw + organised dataset, the
+# cached CLIP features, and the smoke-test throwaways. checkpoints/full.pt
+# and results/ ARE committed: they are small and they are the deliverables.
 data/
 features/
 features_smoke/
-features_cifake/
-features_sid/
-checkpoints/
 checkpoints_smoke/
-checkpoints_cifake/
-checkpoints_sid/
-out_smoke/
-out_cifake/
-out_sid/
-results_smoke/
-results_cifake/
-results_sid/
-demo_images/
-*.npz
-*.pt
-results/*.png
-sample_images/
-.DS_Store
-.ipynb_checkpoints/

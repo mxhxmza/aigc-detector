@@ -1,9 +1,8 @@
-# Committed experiment config (C-5 / C-6 reproducibility).
-# Every reported number must be reproducible from a config in this directory.
+# Committed hyperparameters -- every reported number is reproducible from this.
 
-backbone: ViT-L-14        # ViT-B-16 if extraction is slower than budgeted
+backbone: ViT-B-16        # ViT-L-14 is one flag away and still under the cap
 views: 4                  # K in the feature cache: 1 clean + 3 degraded
-batch_size_extract: 64
+batch_size_extract: 128
 batch_size_train: 256
 
 epochs: 30
@@ -11,18 +10,14 @@ lr: 0.001
 weight_decay: 0.0001
 hidden: 256
 dropout: 0.1
-n_classes: 1              # 1 = binary real-vs-AI sigmoid head (current SID_Set
-                         # setup; src/train.py folds tampered images into
-                         # "real"). Set 3 for the {real, AI, tampered} softmax
-                         # head.
 
 lambda_consistency: 1.0   # clean <-> transformed agreement
 lambda_degradation: 0.1   # degradation-estimation auxiliary loss
 
-val_fraction: 0.12
+test_fraction: 0.12       # scripts/build_dataset.py
 seed: 0
 
-# Ablation ladder -- these four rows are the ablation table.
+# Ablation ladder -- these four runs are the ablation table.
 #   1. --no-forensic --no-gate --no-consistency   semantic baseline
 #   2. --no-forensic --no-gate                    + augmentation
 #   3. --no-gate                                  + frequency branch

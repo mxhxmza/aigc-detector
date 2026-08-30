@@ -4,9 +4,8 @@ The headline number is the organiser's own formula:
 
     Final Score = 0.50 * AUC_clean + 0.50 * AUC_robust
 
-AUC_robust is NOT defined precisely in the brief (see open question O-5), so
-this module implements three readings and reports all of them. That costs
-almost nothing and means we cannot be caught out by whichever one they meant:
+AUC_robust is not defined precisely in the brief, so this module implements
+three readings and reports all of them:
 
     mean        mean AUC over every transform cell        (optimistic)
     worst       minimum AUC over every transform cell     (pessimistic)

@@ -17,7 +17,7 @@ real generative artifact, or a dataset shortcut?
 
 Usage:
     python -m src.error_analysis --manifest data/manifest.csv \
-        --checkpoint checkpoints/run.pt --split val --out results/
+        --checkpoint checkpoints/full.pt --split test --out results/
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--manifest", required=True, type=Path)
     ap.add_argument("--checkpoint", required=True, type=Path)
-    ap.add_argument("--split", default="val")
+    ap.add_argument("--split", default="test")
     ap.add_argument("--out", type=Path, default=Path("results"))
     ap.add_argument("--top-k", type=int, default=12)
     ap.add_argument("--threshold", type=float, default=0.5)
@@ -97,7 +97,6 @@ def main() -> int:
         hidden=cfg.get("hidden", 256),
         use_forensic=cfg.get("use_forensic", True),
         use_gate=cfg.get("use_gate", True),
-        n_classes=cfg.get("n_classes", 1),
     ).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
@@ -117,9 +116,7 @@ def main() -> int:
     probs = score_images(model, backbone, preprocess, images, device,
                          forensic_mu=ckpt.get("forensic_mu"),
                          forensic_sd=ckpt.get("forensic_sd"))
-    # AI-detection view: class 1 vs the rest. probs is p(fully AI-generated),
-    # so tampered (label 2) is a negative -- flagging it AI is a false positive.
-    y = np.array([1 if r.label == 1 else 0 for r in kept])
+    y = np.array([r.label for r in kept])                 # 0 real, 1 AI
     pred = (probs >= args.threshold).astype(int)
 
     fp_idx = np.where((pred == 1) & (y == 0))[0]
@@ -132,11 +129,11 @@ def main() -> int:
     contact_sheet([kept[i].image_path for i in fn_idx], probs[fn_idx],
                   args.out / "fn_grid.png", label="false negatives")
 
-    # Which generators and sources do the errors concentrate in? A strong
-    # concentration is the fingerprint of a shortcut.
-    fn_gens = Counter(kept[i].generator for i in np.where((pred == 0) & (y == 1))[0])
-    fp_srcs = Counter(kept[i].source for i in np.where((pred == 1) & (y == 0))[0])
-    all_gens = Counter(r.generator for r in kept if r.label == 1)
+    # Error rate by image kind -- a concentration is the signature of a
+    # dataset shortcut rather than a real detection signal.
+    fp_kind = Counter(kept[i].kind for i in np.where((pred == 1) & (y == 0))[0])
+    fn_kind = Counter(kept[i].kind for i in np.where((pred == 0) & (y == 1))[0])
+    total_kind = Counter(r.kind for r in kept)
 
     lines = [
         "# Error Analysis Note",
@@ -148,22 +145,14 @@ def main() -> int:
         f"- False negatives (AI called real): **{int(((pred==0)&(y==1)).sum())}** "
         f"({((pred==0)&(y==1)).sum()/max((y==1).sum(),1):.1%} of AI images)",
         "",
-        "## Miss rate by generator",
+        "## Error rate by image kind",
         "",
-        "| Generator | total | missed | miss rate |",
-        "|---|---|---|---|",
+        "| Kind | total | false pos | false neg | error rate |",
+        "|---|---|---|---|---|",
     ]
-    for gen, total in all_gens.most_common():
-        missed = fn_gens.get(gen, 0)
-        lines.append(f"| {gen} | {total} | {missed} | {missed/max(total,1):.1%} |")
-
-    lines += [
-        "",
-        "## False positives by source dataset",
-        "",
-        "| Source | false positives |",
-        "|---|---|",
-    ] + [f"| {s} | {c} |" for s, c in fp_srcs.most_common()]
+    for kind, total in total_kind.most_common():
+        fp, fn = fp_kind.get(kind, 0), fn_kind.get(kind, 0)
+        lines.append(f"| {kind} | {total} | {fp} | {fn} | {(fp+fn)/max(total,1):.1%} |")
 
     lines += [
         "",
@@ -173,25 +162,18 @@ def main() -> int:
         "",
         "## Interpretation",
         "",
-        "> TODO -- write this by hand after looking at the grids. This section",
-        "> is what earns Innovation & Problem Insight; an auto-generated table",
-        "> alone does not. Questions to answer:",
+        "> Write this by hand after looking at the grids. Questions to answer:",
         ">",
         "> 1. Do the false positives share a visual property (heavy texture,",
-        ">    shallow depth of field, smooth skin, low resolution)? If real",
-        ">    photos with smooth regions get flagged, the model may be reading",
-        ">    'lack of high-frequency detail' as 'synthetic' -- which is a",
-        ">    genuine artifact signal misfiring, not a bug, and should be said",
-        ">    plainly.",
-        "> 2. Is the miss rate concentrated in one generator? Strong",
-        ">    concentration means the detector generalises worse than the",
-        ">    aggregate AUC suggests.",
-        "> 3. Do false positives concentrate in one SOURCE dataset? If so,",
-        ">    suspect a dataset shortcut (resolution, compression history,",
-        ">    camera pipeline) rather than a real detection signal.",
-        "> 4. What is the cost asymmetry? Calling a real photograph synthetic",
-        ">    is an accusation against a person; missing a synthetic image is",
-        ">    a gap in coverage. State which error the threshold favours.",
+        ">    shallow depth of field, smooth skin, low resolution)? Real photos",
+        ">    with smooth regions getting flagged means the model reads 'lack of",
+        ">    high-frequency detail' as 'synthetic' -- a real artifact signal",
+        ">    misfiring, not a bug.",
+        "> 2. Do the tampered images fail more often than genuine photos? That",
+        ">    is the AI-edited region leaking a detectable signal.",
+        "> 3. What is the cost asymmetry? Calling a real photograph synthetic is",
+        ">    an accusation against a person; missing a synthetic image is a gap",
+        ">    in coverage. State which error the threshold favours.",
     ]
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -199,8 +181,8 @@ def main() -> int:
     (args.out / "error_analysis_raw.json").write_text(json.dumps({
         "fp_paths": [kept[i].image_path for i in fp_idx],
         "fn_paths": [kept[i].image_path for i in fn_idx],
-        "miss_by_generator": dict(fn_gens),
-        "fp_by_source": dict(fp_srcs),
+        "fp_by_kind": dict(fp_kind),
+        "fn_by_kind": dict(fn_kind),
     }, indent=2), encoding="utf-8")
     print(f"wrote {args.out/'error_analysis.md'}")
     return 0

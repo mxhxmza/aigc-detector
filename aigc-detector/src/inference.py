@@ -19,7 +19,7 @@ The contract that must not drift:
 
 Usage:
     from src.inference import Scorer
-    scorer = Scorer("checkpoints_cifake/full.pt")
+    scorer = Scorer("checkpoints/full.pt")
     p = scorer.score_one(pil_image)          # float in [0, 1]
     ps = scorer.score_many([img1, img2])     # list[float]
 """
@@ -36,14 +36,38 @@ from .features.extract import BACKBONES
 from .models.detector import Detector, count_parameters
 
 
+def region_crops(img: Image.Image, frac: float = 0.68) -> list[Image.Image]:
+    """The full frame plus five overlapping region crops (4 corners + centre).
+
+    A whole-frame score can be poisoned by one small region -- a blurred
+    foreground, a hand, a bit of clutter -- that the model reads as
+    synthetic. Scoring several large overlapping crops and taking the MEDIAN
+    means a single odd region cannot swing the verdict; a genuinely synthetic
+    image, which looks generated everywhere, is unaffected. This measurably
+    cuts false positives on real photos (see README reference numbers).
+    """
+    w, h = img.size
+    cw, ch = int(w * frac), int(h * frac)
+    boxes = [
+        (0, 0, w, h),
+        (0, 0, cw, ch), (w - cw, 0, w, ch),
+        (0, h - ch, cw, h), (w - cw, h - ch, w, h),
+        ((w - cw) // 2, (h - ch) // 2, (w + cw) // 2, (h + ch) // 2),
+    ]
+    return [img.crop(b) for b in boxes]
+
+
 class Scorer:
     """A loaded detector. Construct once (it is not cheap), reuse for every
     image -- constructing it loads the CLIP backbone into memory / VRAM."""
 
-    def __init__(self, checkpoint: str | Path, device: str = "auto"):
+    def __init__(self, checkpoint: str | Path, device: str = "auto", multicrop: bool = True):
         import torch
         import open_clip
 
+        # True -> score six region crops per image and take the median (robust
+        # to a single poisoning region). False -> plain whole-frame score.
+        self.multicrop = multicrop
         self.checkpoint = Path(checkpoint)
         if not self.checkpoint.exists():
             raise FileNotFoundError(
@@ -66,16 +90,12 @@ class Scorer:
         if device == "cuda":
             self.backbone = self.backbone.half()
 
-        # Legacy checkpoints (CIFAKE, early SID) have no n_classes key and are
-        # binary sigmoid heads; SID_Set 3-class checkpoints store n_classes=3.
-        self.n_classes = self.config.get("n_classes", 1)
         self.model = Detector(
             semantic_dim=self.config["semantic_dim"],
             forensic_dim=self.config["forensic_dim"],
             hidden=self.config.get("hidden", 256),
             use_forensic=self.config.get("use_forensic", True),
             use_gate=self.config.get("use_gate", True),
-            n_classes=self.n_classes,
         ).to(device)
         self.model.load_state_dict(ckpt["model"])
         self.model.eval()
@@ -96,10 +116,15 @@ class Scorer:
         )
         self.temperature = float(self.model.temperature.item())
 
-    def _score(self, images: list[Image.Image], batch_size: int, full: bool):
+    def score_many(self, images: list[Image.Image], batch_size: int = 32) -> list[float]:
+        """Calibrated p(AI-generated) for each image, in order.
+
+        With ``multicrop`` each image contributes six region crops and the
+        returned score is their median.
+        """
         import torch
 
-        out: list = []
+        raw: list[float] = []
         buf_t, buf_f = [], []
 
         def flush():
@@ -113,52 +138,22 @@ class Scorer:
                 emb = emb / emb.norm(dim=-1, keepdim=True)
                 f = torch.from_numpy(np.stack(buf_f).astype(np.float32)).to(self.device)
                 f = (f - self.forensic_mu) / self.forensic_sd
-                if full:
-                    p = self.model.predict_proba_full(emb.float(), f)
-                else:
-                    p = self.model.predict_proba(emb.float(), f)
-            out.extend(p.cpu().numpy().tolist())
+                p = self.model.predict_proba(emb.float(), f)
+            raw.extend(p.cpu().numpy().tolist())
             buf_t.clear()
             buf_f.clear()
 
         for img in images:
             rgb = img.convert("RGB")
-            buf_t.append(self.preprocess(rgb))
-            buf_f.append(FQ.extract(rgb))
-            if len(buf_t) >= batch_size:
-                flush()
+            for v in (region_crops(rgb) if self.multicrop else [rgb]):
+                buf_t.append(self.preprocess(v))
+                buf_f.append(FQ.extract(v))
+                if len(buf_t) >= batch_size:
+                    flush()
         flush()
-        return out
 
-    def score_many(self, images: list[Image.Image], batch_size: int = 32) -> list[float]:
-        """Calibrated p(AI-generated) for each image, in order.
-
-        For a 3-class checkpoint this is p(fully synthetic); tampered images
-        score low here on purpose -- an edited photo is still a photo.
-        """
-        return self._score(images, batch_size, full=False)
-
-    def score_many_detailed(self, images: list[Image.Image],
-                            batch_size: int = 32) -> list[dict]:
-        """Per-class calibrated probabilities plus the collapsed verdict split.
-
-        Each entry: {p_real, p_ai_generated, p_tampered, p_authentic}.
-        `p_authentic = p_real + p_tampered` -- the number the website shows.
-        For a binary checkpoint p_tampered is 0 and p_real = 1 - p_ai.
-        """
-        rows = self._score(images, batch_size, full=True)
-        result = []
-        for r in rows:
-            p_real = float(r[0])
-            p_ai = float(r[1])
-            p_tam = float(r[2]) if len(r) > 2 else 0.0
-            result.append({
-                "p_real": p_real,
-                "p_ai_generated": p_ai,
-                "p_tampered": p_tam,
-                "p_authentic": p_real + p_tam,
-            })
-        return result
+        k = 6 if self.multicrop else 1
+        return np.median(np.asarray(raw).reshape(len(images), k), axis=1).tolist()
 
     def score_one(self, image: Image.Image) -> float:
         return self.score_many([image])[0]

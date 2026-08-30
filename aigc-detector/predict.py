@@ -21,22 +21,20 @@ Output (default `--format list`):
 
 `pred` is a CALIBRATED probability in [0,1] that the image is AI-generated.
 The brief says "confidence score ... indicating the likelihood", which reads
-as a probability rather than a hard label, so that is the default. If the
-organisers turn out to want a mapping or binary labels instead, the
-`--format dict` and `--binary` flags cover it without a code change. This is
-open question O-4 in the PRD; ask before submitting if you can.
+as a probability rather than a hard label, so that is the default. The
+`--format dict` and `--binary` flags cover the alternate readings without a
+code change.
 
-Robustness notes (FR-3): unreadable and non-image files are skipped and
-reported rather than crashing the run. A single corrupt file must never take
-down a judge's evaluation.
+Unreadable and non-image files are skipped and reported rather than crashing
+the run -- a single corrupt file must never take down a judge's evaluation.
 
 Stub mode
 ---------
     python predict.py --image-dir imgs --out preds.json --stub
 
 Emits schema-correct output with random scores and NO dependency on torch or
-trained weights. This exists so the submission contract is satisfiable from
-hour one of the hackathon, before any model exists. Never submit with it.
+trained weights, so the output contract can be checked before a model exists.
+Never submit with it.
 """
 
 from __future__ import annotations
@@ -113,6 +111,7 @@ def run_model(
     checkpoint: Path,
     batch_size: int,
     device_arg: str,
+    multicrop: bool = True,
 ) -> tuple[list[float], list[str]]:
     """Real inference: frozen backbone + forensic features + gated head.
 
@@ -133,7 +132,7 @@ def run_model(
         )
 
     try:
-        scorer = Scorer(checkpoint, device=device_arg)
+        scorer = Scorer(checkpoint, device=device_arg, multicrop=multicrop)
     except ValueError as exc:
         raise SystemExit(f"error: {exc}")
 
@@ -175,8 +174,11 @@ def main() -> int:
     ap.add_argument("--checkpoint", type=Path, default=Path("checkpoints/full.pt"))
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
+    ap.add_argument("--no-multicrop", action="store_true",
+                    help="score the whole frame only (6x faster, ~1pp less "
+                         "accurate, more false positives on framed photos)")
     ap.add_argument("--format", default="list", choices=["list", "dict"],
-                    help="JSON shape; see O-4 in the PRD")
+                    help="JSON shape: list of {image_path, pred} or {path: pred}")
     ap.add_argument("--binary", action="store_true",
                     help="emit 0/1 labels instead of probabilities")
     ap.add_argument("--threshold", type=float, default=0.5)
@@ -201,7 +203,8 @@ def main() -> int:
         print("STUB MODE -- random scores. Do not submit results from this.")
         scores, failed = run_stub(paths, args.seed)
     else:
-        scores, failed = run_model(paths, args.checkpoint, args.batch_size, args.device)
+        scores, failed = run_model(paths, args.checkpoint, args.batch_size,
+                                   args.device, multicrop=not args.no_multicrop)
 
     def render(p: Path) -> str:
         if args.relative:

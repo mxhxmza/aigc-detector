@@ -2,10 +2,9 @@
 
 The brief asks for a "confidence score ... indicating the likelihood that it
 is AIGC-generated". A raw sigmoid output is not a likelihood -- networks
-trained with BCE are systematically overconfident, and that matters here for
-a concrete reason: the deployment story in the PRD is tiered triage
-(auto-action / human review / ignore), and choosing those bands requires the
-number to mean what it says.
+trained with BCE are systematically overconfident, and the intended
+deployment is tiered triage (auto-action / human review / ignore), where
+choosing the bands requires the number to mean what it says.
 
 Temperature scaling is a single learned scalar that divides the logits. It
 cannot change the ranking, so AUC is exactly unchanged -- it only fixes the
@@ -26,40 +25,19 @@ def fit_temperature(
     max_iter: int = 200,
     lr: float = 0.01,
 ) -> float:
-    """Optimise a single temperature to minimise NLL on held-out logits.
-
-    Handles both heads:
-      * 1-D logits (or shape (N, 1)) with float labels -> binary, BCE NLL.
-      * (N, C) logits with integer labels              -> multiclass, CE NLL.
-    Guo et al.'s temperature scaling is defined for the multiclass case; the
-    binary case is the same idea with a sigmoid.
-    """
-    logits = logits.detach().float()
-    labels = labels.detach()
-    multiclass = logits.dim() == 2 and logits.shape[1] > 1
+    """Optimise a single temperature to minimise BCE NLL on held-out logits."""
+    logits = logits.detach().float().ravel()
+    labels = labels.detach().float().ravel()
 
     log_t = torch.zeros(1, requires_grad=True)  # temperature = exp(log_t) > 0
     opt = torch.optim.LBFGS([log_t], lr=lr, max_iter=max_iter)
+    loss_fn = torch.nn.BCEWithLogitsLoss()
 
-    if multiclass:
-        y = labels.long().ravel()
-        loss_fn = torch.nn.CrossEntropyLoss()
-
-        def closure():
-            opt.zero_grad()
-            loss = loss_fn(logits / log_t.exp(), y)
-            loss.backward()
-            return loss
-    else:
-        flat = logits.ravel()
-        y = labels.float().ravel()
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-
-        def closure():
-            opt.zero_grad()
-            loss = loss_fn(flat / log_t.exp(), y)
-            loss.backward()
-            return loss
+    def closure():
+        opt.zero_grad()
+        loss = loss_fn(logits / log_t.exp(), labels)
+        loss.backward()
+        return loss
 
     opt.step(closure)
     return float(log_t.exp().item())
