@@ -1,0 +1,26 @@
+# IMPORTANT (RTX 50-series / Blackwell, sm_120):
+# Install torch FIRST from the CUDA 12.8 index, or kernels will not run:
+#
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#
+# Then: pip install -r requirements.txt
+# Verify with: python scripts/verify_env.py
+#
+# Verified on an RTX 5060 Laptop (sm_120, 8GB): torch 2.11.0+cu128 passes
+# scripts/verify_env.py, including the fp16 matmul kernel check.
+torch>=2.7.0
+torchvision>=0.22.0
+
+open_clip_torch>=2.24.0
+numpy>=1.26,<3
+scipy>=1.11
+scikit-learn>=1.3
+Pillow>=10.0
+tqdm>=4.66
+kagglehub>=0.3          # only for the CIFAKE quickstart in the README
+datasets>=2.19         # only for scripts/fetch_sid_set.py (SID_Set streaming)
+
+# Web interface (app.py) only. The CLI (predict.py) does not need these.
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
