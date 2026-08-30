@@ -190,10 +190,11 @@ time — they behave like genuine photos, which is the intent.
 `results/error_analysis.md` has the per-kind breakdown; the 27 held-out
 hard-negative crops are scored there too (0 errors).
 
-> `results/robustness_table.md` is currently one checkpoint behind — it was
-> generated before the hard-negative pass. Regenerate with
-> `python -m src.evaluate --manifest data/manifest.csv --checkpoint
-> checkpoints/full.pt --split test --out results/`.
+**Robustness** (2,255 test images × 16 transform cells): clean AUC **1.000**,
+**no cell below 0.999** — JPEG down to q30, blur to σ=2.0, downscale to
+0.25×, noise to σ=0.1, ±20% colour jitter, 80% crop. Mean AUC drop
+**+0.0004**, worst-case accuracy 0.983, ECE ≤ 0.011 throughout. Per-family
+final score **0.9997**. Full grid in `results/robustness_table.md`.
 
 ### 3.2 Web interface
 
