@@ -206,6 +206,14 @@ the eval set:
 already predicts "AI"; the partner buckets keep resolution and aspect ratio
 uninformative.)
 
+```bash
+python scripts/fetch_external_ai.py --per-bucket 3000    # leak-checks vs WildFake
+python scripts/add_external_ai.py                        # additive merge
+python -m src.features.extract --manifest data/manifest.csv --out features/ \
+    --views 4 --backbone ViT-B-16 --batch-size 128 --workers 2
+python -m src.train --features features/ --out checkpoints/ --epochs 30 --tag full
+```
+
 **The DALL·E half worked; the ProGAN half did not.** On WildFake:
 
 | | before | after |
@@ -218,11 +226,32 @@ uninformative.)
 | `cross_generator` AUC | 0.826 | 0.808 |
 | false positives, LAION reals | 1.7% | **6.0%** |
 
-The cost is real: false positives on LAION-style real photos rose to 6%, and
-in-distribution accuracy slipped 0.9964 → 0.9929. The trade was taken
+Two DALL·E-3 and GigaGAN images that this model originally scored as *real*
+turned out to be byte-identical to WildFake eval images, so they could not go
+into training. They serve as an unbiased spot check: after the pass the DALL·E
+image went **0.20 → 1.00** (caught by generalisation, never seen), the GigaGAN
+image stayed missed at **0.002**.
+
+The cost is real: false positives on LAION-style real photos rose 1.7% → 6.0%
+(plain COCO photos stay under 1%), in-distribution accuracy slipped
+0.9964 → 0.9929, and per-family robustness 0.9998 → 0.998. The trade was taken
 deliberately — DALL·E 3 and Midjourney are the generators a user is most
-likely to meet, and the benchmark's own DALL·E images (held out, never
-trained on) went from missed to caught.
+likely to meet.
+
+### The shipped checkpoint
+
+`checkpoints/full.pt` (2.2 MB) is the SID_Set base plus all three additive
+passes above. Every pass keeps every existing train/test split, so the
+held-out numbers below were never trained on at any stage.
+
+| stage | train images | WildFake `laion_matched` AUC |
+|---|---|---|
+| SID base + hard negatives | 18,748 | 0.910 |
+| + SID top-up to 10k/class | 30,180 | 0.930 |
+| + external DALL·E 3 / GAN | **42,220** | **0.989** |
+
+In-distribution F1 held at ≈0.99 across all three stages — the passes bought
+transfer, not headline accuracy (and the last one cost a little of it).
 
 ### Reference numbers
 
