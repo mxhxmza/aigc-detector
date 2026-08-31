@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -133,7 +133,11 @@ def main() -> int:
     deg_all: list[np.ndarray] = []
     meta: list[dict] = []
 
-    pool = ProcessPoolExecutor(max_workers=args.workers) if args.workers > 1 else None
+    # ThreadPoolExecutor, not ProcessPoolExecutor: the forensic worker is scipy
+    # FFT/DCT which releases the GIL, so threads parallelise it just as well,
+    # and the process pool has deadlocked on Windows (spawn + large pickled
+    # payloads) enough times to not be worth it.
+    pool = ThreadPoolExecutor(max_workers=args.workers) if args.workers > 1 else None
     batch_tensors: list[torch.Tensor] = []
     pending_forensic = []
     n_skipped = 0

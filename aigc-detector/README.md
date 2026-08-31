@@ -188,32 +188,67 @@ on the WildFake transfer benchmark below — `laion_matched` AUC 0.910 →
 **0.930**, and an unseen GAN (GigaGAN) 0.500 → **0.581** with no GAN in
 training.
 
+### External DALL·E 3 / GAN pass (also in the shipped checkpoint)
+
+SID_Set is diffusion-only and contains no DALL·E 3 and no GANs, and the
+WildFake benchmark showed both as weak spots. This pass adds, from sources
+that are **not** WildFake and perceptual-hash-checked against every image in
+the eval set:
+
+| kind | n | source |
+|---|---|---|
+| `ext_dalle3` | 2,681 | DALL·E 3, reddit scrapes (~1024px) |
+| `ext_progan` | 3,380 | ProGAN, ForenSynths (256px) |
+| `lsun` | 3,327 real | LSUN photos, same 256px pipeline — resolution partner |
+| `real_square` | 2,652 real | square-cropped SID reals — aspect-ratio partner |
+
+(SID synthetics are 100% square and its reals 94% non-square, so "square"
+already predicts "AI"; the partner buckets keep resolution and aspect ratio
+uninformative.)
+
+**The DALL·E half worked; the ProGAN half did not.** On WildFake:
+
+| | before | after |
+|---|---|---|
+| `laion_matched` AUC | 0.930 | **0.989** |
+| `default` / `normalized` AUC | 0.959 / 0.947 | **0.999 / 0.997** |
+| DALL·E 3 recall @0.5 | 0.72 | **0.93** |
+| Midjourney v5 recall @0.5 | 0.69 | **0.87** (transferred from DALL·E) |
+| GigaGAN recall @0.5 | 0.04 | 0.04 (ProGAN did not transfer) |
+| `cross_generator` AUC | 0.826 | 0.808 |
+| false positives, LAION reals | 1.7% | **6.0%** |
+
+The cost is real: false positives on LAION-style real photos rose to 6%, and
+in-distribution accuracy slipped 0.9964 → 0.9929. The trade was taken
+deliberately — DALL·E 3 and Midjourney are the generators a user is most
+likely to meet, and the benchmark's own DALL·E images (held out, never
+trained on) went from missed to caught.
+
 ### Reference numbers
 
-SID_Set subset (10k images per class) plus the hard-negative pass — **30,180
-images**, 3,627 held out in `data/test/`, ViT-B-16, RTX 5060, seed 0. Scored
+SID_Set (10k/class) + hard-negative + external DALL·E 3/GAN pass — **42,220
+images**, 5,072 held out in `data/test/`, ViT-B-16, RTX 5060, seed 0. Scored
 on the full held-out set:
 
 | metric | value |
 |---|---|
-| Accuracy | **0.996** |
+| Accuracy | **0.993** |
 | Precision | **0.990** |
-| Recall | **0.999** |
-| F1 | **0.995** |
+| Recall | **0.992** |
+| F1 | **0.991** |
 | ROC-AUC | **1.000** |
 
-**12** false positives (0.49% of real — 6 genuine photos, 6 tampered), **1**
-false negative (0.08% of AI). Tampered photos are flagged as AI 0.5% of the
-time — they behave like genuine photos, which is the intent.
+**20** false positives (0.64% of real), **16** false negatives (0.83% of AI).
+By kind: genuine photos 11/1200, tampered 4/1200, ProGAN 7/406, LSUN 5/399,
+DALL·E 3 6/322. `results/error_analysis.md` has the full breakdown; the 27
+held-out hard-negative crops score 0 errors.
 
-`results/error_analysis.md` has the per-kind breakdown; the 27 held-out
-hard-negative crops are scored there too (0 errors).
-
-**Robustness** (3,627 test images × 16 transform cells): clean AUC **1.000**,
-**no cell below 0.999** — JPEG down to q30, blur to σ=2.0, downscale to
-0.25×, noise to σ=0.1, ±20% colour jitter, 80% crop. Mean AUC drop
-**+0.0002**, worst-case accuracy 0.988, ECE ≤ 0.012 throughout. Per-family
-final score **0.9998**. Full grid in `results/robustness_table.md`.
+**Robustness** (2,000-image balanced subsample × 16 transform cells): clean
+AUC **0.999**, no cell below **0.993** — JPEG down to q30, blur to σ=2.0,
+downscale to 0.25×, noise to σ=0.1, ±20% colour jitter, 80% crop. Mean AUC
+drop **+0.0017**, worst-case accuracy 0.964, ECE ≤ 0.026. Per-family final
+score **0.998** (down from 0.9998 before the external pass — the broader AI
+class costs a little consistency). Full grid in `results/robustness_table.md`.
 
 ### WildFake reference benchmark (never trained on)
 
@@ -226,10 +261,10 @@ ever enters `data/manifest.csv`.
 
 | config | n | AUC | balanced acc @0.5 | @best threshold |
 |---|---|---|---|---|
-| `default` (spec-faithful) | 13,841 | 0.959 | 0.852 | 0.891 |
-| `normalized` | 13,841 | 0.947 | 0.840 | 0.883 |
-| **`laion_matched`** | 7,652 | **0.930** | 0.835 | 0.872 |
-| `cross_generator` | 5,494 | 0.826 | 0.735 | 0.783 |
+| `default` (spec-faithful) | 13,841 | 0.999 | 0.976 | 0.981 |
+| `normalized` | 13,841 | 0.997 | 0.965 | 0.974 |
+| **`laion_matched`** | 7,652 | **0.989** | 0.948 | 0.950 |
+| `cross_generator` | 5,494 | 0.808 | 0.764 | 0.772 |
 
 **Quote `laion_matched`, not `default`.** In `default` every COCO real is
 exactly 200×200 and no DALL·E fake is, so `img.size == (200, 200)` scores
@@ -238,19 +273,20 @@ next to our score so the two can never be confused.
 
 Two things this benchmark makes plain that the in-distribution numbers hide:
 
-1. **Diffusion transfers well; GANs transfer weakly, but they do transfer.**
-   Per generator: DALL·E 3 **0.939**, Midjourney v5 **0.929**, SDXL
-   **0.855**, GigaGAN **0.581** (4% recall at the 0.5 threshold). Training
-   contains no GAN images at all, yet GigaGAN moved from chance (0.500 at the
-   6.2k/class subset) to 0.581 purely on more diffusion variety — the frozen
-   CLIP branch is picking up something generator-agnostic. GANs are still the
-   weak spot; the fix is GAN images in training, not a different architecture.
-2. **The residual gap is calibration, not detection.** False positives stay
-   good out of distribution (1.1% on COCO, 1.7% on LAION), but AI recall runs
-   51–72% at the 0.5 threshold. Sweeping the threshold recovers 4–8 points of
-   balanced accuracy, and ECE is 0.16–0.37 — the ranking survives the
-   distribution shift, the temperature does not. Re-fitting temperature per
-   deployment domain is the fix.
+1. **Diffusion is well covered; modern GANs are not.** Per generator: DALL·E 3
+   **0.99** / recall 0.93, Midjourney v5 **0.97** / 0.87, SDXL **0.82** /
+   0.48, GigaGAN **0.45** / 0.04. The external pass added DALL·E 3 and ProGAN
+   images: DALL·E detection jumped and carried Midjourney with it, but ProGAN
+   did **not** transfer to GigaGAN — a 2018 category GAN and a 2023
+   text-to-image GAN leave different traces. GigaGAN remains the clearest
+   hole.
+2. **DALL·E coverage was bought with real-photo false positives.** On
+   `laion_matched` the false-positive rate on genuine LAION photos is ~6%
+   (COCO stays under 1%). LAION web imagery sits close to the DALL·E
+   aesthetic, and the model now leans on that aesthetic. A deployment that
+   cares about not accusing real photographers should raise the threshold
+   (`@best` recovers most of the balanced accuracy) or re-fit temperature on
+   its own traffic.
 
 Full tables, per-generator and per-source, in `results/wildfake_benchmark.md`;
 raw per-image scores in `results/wildfake_scores.npz`.
@@ -326,24 +362,28 @@ pairs. `--backbone ViT-L-14` is one flag away and still under the cap.
 2. **Finite augmentation views.** Training uses K=4 fixed views per image
    rather than fresh random augmentation each epoch, a consequence of caching
    features. Larger K trades disk for diversity.
-3. **GANs are the weak spot, and it is measured.** SID_Set's synthetics are
-   diffusion-based. On the WildFake benchmark: DALL·E 3 0.939 AUC, Midjourney
-   v5 0.929, SDXL 0.855, **GigaGAN 0.581** (4% recall at 0.5). Training
-   contains no GAN images, so GigaGAN sitting above chance at all is the
-   frozen CLIP branch generalising; closing the rest of the gap means GAN
-   images in training, not a better architecture.
-4. **Confidence does not survive a distribution shift.** Temperature is fitted
-   on SID_Set, so ECE stays ≤0.010 in-distribution but rises to 0.16–0.37 on
-   WildFake, where recall at the 0.5 threshold runs 51–72% even though AUC
-   holds at 0.93 on `laion_matched`. The ranking transfers; the operating
-   point does not. Any real deployment should re-fit temperature on its own
-   traffic.
-5. **Incidental degradation, not adversarial.** The six transforms model a
+3. **Modern text-to-image GANs are the weak spot.** After the external pass,
+   DALL·E 3 (0.99 AUC) and Midjourney (0.97) are well covered, but **GigaGAN
+   sits at 0.45 / 4% recall**. Training now includes ProGAN, which did not
+   transfer — a category GAN and a text-to-image GAN leave different traces.
+   The fix is a modern GAN (StyleGAN-3, GigaGAN-class) in training.
+4. **DALL·E coverage cost real-photo false positives.** The external DALL·E 3
+   images pushed the false-positive rate on LAION-style real photos to ~6% on
+   the WildFake `laion_matched` config (it was 1.7%, and COCO reals stay under
+   1%). The model leans on the DALL·E aesthetic, which polished web photos
+   share. In-distribution accuracy also slipped 0.9964 → 0.9929. Raising the
+   threshold recovers most of the balanced accuracy; a deployment that must
+   not accuse real photographers should do that or re-fit temperature.
+5. **Confidence does not survive a distribution shift.** Temperature is fitted
+   on the training corpus; ECE rises on WildFake and the 0.5 threshold is not
+   the right operating point there. The ranking (AUC) transfers; re-fit
+   temperature on deployment traffic.
+6. **Incidental degradation, not adversarial.** The six transforms model a
    redistribution pipeline, not an adversary deliberately evading detection.
-6. **Tampered images are called real.** A photo with a small AI-edited region
+7. **Tampered images are called real.** A photo with a small AI-edited region
    is treated as authentic. That is the right product call for "is this
    photo real", but it means localised manipulation is not surfaced.
-7. **False positives are accusations.** Calling a real photograph synthetic
+8. **False positives are accusations.** Calling a real photograph synthetic
    has a human cost. At this accuracy the appropriate deployment is a
    human-review queue, not automated enforcement.
 
@@ -374,6 +414,8 @@ scripts/verify_env.py           sm_120 / CUDA check -- run first
 scripts/fetch_sid_set.py        stream a balanced SID_Set subset to disk
 scripts/build_dataset.py        split + organise -> data/{train,test} + manifest.csv
 scripts/add_hard_negatives.py   mine + augment hard real photos into the train set
+scripts/fetch_external_ai.py     pull DALL-E 3 / GAN images (non-WildFake, leak-checked)
+scripts/add_external_ai.py       additively merge the external-AI images
 scripts/eval_wildfake.py        WildFake reference benchmark (eval only, never trained on)
 scripts/make_smoke_data.py      tiny synthetic dataset for the plumbing test
 src/data/manifest.py            the manifest: image_path, label, kind, split
