@@ -428,8 +428,8 @@ pairs. `--backbone ViT-L-14` is one flag away and still under the cap.
 
 ## 5. Team Member Contributions
 
-**Solo submission.** All work — data pipeline, model, evaluation harness,
-error analysis, and write-up — by the single participant listed on Devpost.
+**Team submission.** All work — data pipeline, model, evaluation harness,
+error analysis, and write-up — by my team listed on Devpost.
 
 ---
 
