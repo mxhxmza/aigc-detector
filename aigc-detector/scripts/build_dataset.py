@@ -23,9 +23,18 @@ Splitting by physically separating the files makes the "never trained on
 test" guarantee structural -- an image is in exactly one folder -- rather
 than something a hash check has to police after the fact.
 
+Re-runnable and additive. An existing manifest is kept, images already placed
+are skipped, and only genuinely new ones are routed -- so topping the dataset
+up later adds to it instead of rebuilding it. That matters for more than
+convenience: a rebuild would reshuffle the split and quietly move images the
+current checkpoint was evaluated on into training.
+
 Usage:
     python scripts/fetch_sid_set.py --out data/sid_set --per-class 10000 --include-tampered
     python scripts/build_dataset.py            # consumes data/sid_set/
+    # later, after fetching more:
+    python scripts/fetch_sid_set.py --out data/sid_set --per-class 20000 --include-tampered
+    python scripts/build_dataset.py            # adds only what is new
 """
 
 from __future__ import annotations
@@ -34,6 +43,7 @@ import argparse
 import csv
 import random
 import shutil
+from collections import Counter
 from pathlib import Path
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -77,17 +87,39 @@ def main() -> int:
 
     rng = random.Random(args.seed)
 
-    # group every image by (label, kind, class dir), then split each group so
-    # the train/test class balance matches the whole corpus.
+    # Existing rows are kept and the images they name stay where they are, so a
+    # top-up download only has to route what is new. Anything already assigned
+    # a split keeps it: moving an image from test to train would put a picture
+    # the current checkpoint was evaluated on into training, which is the leak
+    # this layout exists to prevent. Rows whose file is gone are dropped.
+    rows: list[dict] = []
+    placed: set[str] = set()
+    if args.manifest.exists():
+        with args.manifest.open(newline="", encoding="utf-8") as fh:
+            for r in csv.DictReader(fh):
+                if Path(r["image_path"]).exists():
+                    rows.append(r)
+                    placed.add(Path(r["image_path"]).name)
+        print(f"existing manifest: {len(rows)} rows kept")
+
+    # group every NEW image by (label, kind, class dir), then split each group
+    # so the train/test class balance matches the whole corpus.
     groups: dict[tuple[int, str, str], list[Path]] = {}
+    already = 0
     for path in sorted(args.raw.rglob("*")):
         if path.suffix.lower() not in IMAGE_EXTS or not path.is_file():
             continue
         hit = classify(path.relative_to(args.raw).parts)
-        if hit:
-            groups.setdefault(hit, []).append(path)
+        if not hit:
+            continue
+        if f"{hit[1]}_{path.stem}{path.suffix.lower()}" in placed:
+            already += 1                      # same image from an earlier run
+            continue
+        groups.setdefault(hit, []).append(path)
+    if already:
+        print(f"skipped {already} images already in the manifest")
 
-    rows: list[dict] = []
+    added: list[dict] = []
     for (label, kind, cls), files in sorted(groups.items()):
         rng.shuffle(files)
         n_test = round(len(files) * args.test_fraction)
@@ -97,13 +129,16 @@ def main() -> int:
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest = dest_dir / f"{kind}_{path.stem}{path.suffix.lower()}"
             shutil.move(str(path), dest)
-            rows.append({"image_path": str(dest), "label": label,
-                         "kind": kind, "split": split})
-        print(f"{kind:12s} {len(files):6d}  ->  {len(files) - n_test} train / {n_test} test")
+            added.append({"image_path": str(dest), "label": label,
+                          "kind": kind, "split": split})
+        print(f"{kind:12s} +{len(files):6d}  ->  {len(files) - n_test} train / {n_test} test")
 
-    if not rows:
+    if not rows and not added:
         raise SystemExit(f"no images found under {args.raw} (expected real/ and fake/).")
+    if not added:
+        print("nothing new to add.")
 
+    rows += added
     rows.sort(key=lambda r: r["image_path"])
     with args.manifest.open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=["image_path", "label", "kind", "split"])
@@ -114,10 +149,12 @@ def main() -> int:
     shutil.rmtree(args.raw, ignore_errors=True)
 
     n_train = sum(r["split"] == "train" for r in rows)
-    n_ai = sum(r["label"] == 1 for r in rows)
-    print(f"\nwrote {len(rows)} rows to {args.manifest}")
+    n_ai = sum(int(r["label"]) == 1 for r in rows)
+    print(f"\nwrote {len(rows)} rows to {args.manifest} (+{len(added)} new)")
     print(f"  train {n_train}   test {len(rows) - n_train}")
     print(f"  real {len(rows) - n_ai}   ai {n_ai}")
+    print("  kinds: " + ", ".join(
+        f"{k}={v}" for k, v in sorted(Counter(r["kind"] for r in rows).items())))
     return 0
 
 

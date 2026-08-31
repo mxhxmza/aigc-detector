@@ -115,17 +115,20 @@ balanced subset (no full download), re-saving everything as PNG at ≤512 px.
 ```bash
 pip install datasets
 
-# 1. Download a balanced subset (~6 GB). Resumes if interrupted.
+# 1. Download a balanced subset (~10 GB at 10k/class). Resumable, and
+#    re-runnable with a larger --per-class to top the subset up later.
 python scripts/fetch_sid_set.py --out data/sid_set --per-class 10000 --include-tampered
 
 # 2. Split and organise into data/train/{real,ai} and data/test/{real,ai},
 #    and write data/manifest.csv. The train/test boundary is a physical
 #    folder split, so "never trained on test" is structural, not a promise.
+#    Additive: re-running after a top-up keeps every existing split assignment.
 python scripts/build_dataset.py
 
-# 3. Extract cached features. One-time cost (~15 min); every run after is seconds.
+# 3. Extract cached features. One-time cost (~25 min); every run after is seconds.
+#    --workers 2 on Windows: the forensic worker pool can deadlock at 4.
 python -m src.features.extract --manifest data/manifest.csv --out features/ \
-    --views 4 --backbone ViT-B-16 --batch-size 128 --workers 4
+    --views 4 --backbone ViT-B-16 --batch-size 128 --workers 2
 
 # 4. Train. The ablation ladder -- run all four for the ablation table:
 python -m src.train --features features/ --tag baseline --no-forensic --no-gate --no-consistency
@@ -169,32 +172,49 @@ Measured effect on the *unchanged* held-out set: false positives 13 → **7**
 from mean p(AI) 0.22 (5 flagged) to **0.015 (0 flagged)**, so it generalised
 rather than memorised.
 
+### SID top-up (also in the shipped checkpoint)
+
+The subset was then extended from ~6.2k to **10k images per class** (18,748 →
+30,180 rows) — same three SID kinds, `build_dataset.py` run again. It is
+additive by construction: every image that already had a train/test split
+keeps it, so no picture the previous checkpoint was evaluated on moved into
+training. More diffusion variety, no new generator families.
+
+Measured on the *pre-top-up* held-out set (2,255 images, unseen by both
+checkpoints): accuracy 0.9956 → **0.9965**, F1 0.9933 → **0.9947**, AI recall
+0.996 → **1.000** (3 false negatives → 0), one extra false positive (7 → 8).
+In-distribution the model was already near the ceiling; the real movement is
+on the WildFake transfer benchmark below — `laion_matched` AUC 0.910 →
+**0.930**, and an unseen GAN (GigaGAN) 0.500 → **0.581** with no GAN in
+training.
+
 ### Reference numbers
 
-SID_Set subset plus the hard-negative pass (18,748 images), 2,255 held out in
-`data/test/`, ViT-B-16, RTX 5060, seed 0. Scored on the 2,228 original SID
-test images so the numbers stay comparable across runs:
+SID_Set subset (10k images per class) plus the hard-negative pass — **30,180
+images**, 3,627 held out in `data/test/`, ViT-B-16, RTX 5060, seed 0. Scored
+on the full held-out set:
 
 | metric | value |
 |---|---|
 | Accuracy | **0.996** |
-| Precision | **0.991** |
-| Recall | **0.996** |
-| F1 | **0.993** |
+| Precision | **0.990** |
+| Recall | **0.999** |
+| F1 | **0.995** |
 | ROC-AUC | **1.000** |
 
-**7** false positives (0.47% of real — 3 genuine photos, 4 tampered), **3**
-false negatives (0.40% of AI). Tampered photos are flagged as AI 0.5% of the
+**12** false positives (0.49% of real — 6 genuine photos, 6 tampered), **1**
+false negative (0.08% of AI). Tampered photos are flagged as AI 0.5% of the
 time — they behave like genuine photos, which is the intent.
 
 `results/error_analysis.md` has the per-kind breakdown; the 27 held-out
 hard-negative crops are scored there too (0 errors).
 
-**Robustness** (2,255 test images × 16 transform cells): clean AUC **1.000**,
-**no cell below 0.999** — JPEG down to q30, blur to σ=2.0, downscale to
-0.25×, noise to σ=0.1, ±20% colour jitter, 80% crop. Mean AUC drop
-**+0.0004**, worst-case accuracy 0.983, ECE ≤ 0.011 throughout. Per-family
-final score **0.9997**. Full grid in `results/robustness_table.md`.
+**Robustness** (1,600-image balanced subsample × 16 transform cells — the
+forensic FFT features are CPU-bound, so the grid is subsampled): clean AUC
+**1.000**, **no cell below 0.999** — JPEG down to q30, blur to σ=2.0,
+downscale to 0.25×, noise to σ=0.1, ±20% colour jitter, 80% crop. Mean AUC
+drop **+0.0002**, worst-case accuracy 0.989, ECE ≤ 0.010 throughout.
+Per-family final score **0.9998**. Full grid in `results/robustness_table.md`.
 
 ### WildFake reference benchmark (never trained on)
 
@@ -207,10 +227,10 @@ ever enters `data/manifest.csv`.
 
 | config | n | AUC | balanced acc @0.5 | @best threshold |
 |---|---|---|---|---|
-| `default` (spec-faithful) | 13,841 | 0.962 | 0.828 | 0.899 |
-| `normalized` | 13,841 | 0.940 | 0.771 | 0.875 |
-| **`laion_matched`** | 7,652 | **0.910** | 0.802 | 0.848 |
-| `cross_generator` | 5,494 | 0.792 | 0.709 | 0.755 |
+| `default` (spec-faithful) | 13,841 | 0.959 | 0.852 | 0.891 |
+| `normalized` | 13,841 | 0.947 | 0.840 | 0.883 |
+| **`laion_matched`** | 7,652 | **0.930** | 0.835 | 0.872 |
+| `cross_generator` | 5,494 | 0.826 | 0.735 | 0.783 |
 
 **Quote `laion_matched`, not `default`.** In `default` every COCO real is
 exactly 200×200 and no DALL·E fake is, so `img.size == (200, 200)` scores
@@ -219,17 +239,19 @@ next to our score so the two can never be confused.
 
 Two things this benchmark makes plain that the in-distribution numbers hide:
 
-1. **Diffusion transfers, GANs do not.** Per generator: DALL·E 3 **0.923**,
-   Midjourney v5 **0.922**, SDXL **0.823**, GigaGAN **0.500** — chance, with
-   2% recall. Training saw only diffusion synthetics, and the frequency
-   artifacts a GAN leaves are simply not the ones this model learned. Not a
-   degradation, an absence.
+1. **Diffusion transfers well; GANs transfer weakly, but they do transfer.**
+   Per generator: DALL·E 3 **0.939**, Midjourney v5 **0.929**, SDXL
+   **0.855**, GigaGAN **0.581** (4% recall at the 0.5 threshold). Training
+   contains no GAN images at all, yet GigaGAN moved from chance (0.500 at the
+   6.2k/class subset) to 0.581 purely on more diffusion variety — the frozen
+   CLIP branch is picking up something generator-agnostic. GANs are still the
+   weak spot; the fix is GAN images in training, not a different architecture.
 2. **The residual gap is calibration, not detection.** False positives stay
-   excellent out of distribution (0.46% on COCO, 2.5% on LAION), but AI
-   recall falls to 44–67% at the 0.5 threshold. Sweeping the threshold
-   recovers 5–10 points of balanced accuracy, and ECE rises to 0.18–0.40 —
-   the ranking survives the distribution shift, the temperature does not.
-   Re-fitting temperature per deployment domain is the fix.
+   good out of distribution (1.1% on COCO, 1.7% on LAION), but AI recall runs
+   51–72% at the 0.5 threshold. Sweeping the threshold recovers 4–8 points of
+   balanced accuracy, and ECE is 0.16–0.37 — the ranking survives the
+   distribution shift, the temperature does not. Re-fitting temperature per
+   deployment domain is the fix.
 
 Full tables, per-generator and per-source, in `results/wildfake_benchmark.md`;
 raw per-image scores in `results/wildfake_scores.npz`.
@@ -305,17 +327,18 @@ pairs. `--backbone ViT-L-14` is one flag away and still under the cap.
 2. **Finite augmentation views.** Training uses K=4 fixed views per image
    rather than fresh random augmentation each epoch, a consequence of caching
    features. Larger K trades disk for diversity.
-3. **Diffusion only — GANs are a blind spot, and it is measured.** SID_Set's
-   synthetics are diffusion-based, and on the WildFake benchmark that boundary
-   is stark: DALL·E 3 0.923 AUC, Midjourney v5 0.922, SDXL 0.823, **GigaGAN
-   0.500** — chance, 2% recall. A GAN leaves different frequency artifacts
-   than a diffusion model and this detector never saw them. Fixing it means
-   GAN images in training, not a better architecture.
+3. **GANs are the weak spot, and it is measured.** SID_Set's synthetics are
+   diffusion-based. On the WildFake benchmark: DALL·E 3 0.939 AUC, Midjourney
+   v5 0.929, SDXL 0.855, **GigaGAN 0.581** (4% recall at 0.5). Training
+   contains no GAN images, so GigaGAN sitting above chance at all is the
+   frozen CLIP branch generalising; closing the rest of the gap means GAN
+   images in training, not a better architecture.
 4. **Confidence does not survive a distribution shift.** Temperature is fitted
-   on SID_Set, so ECE stays ≤0.011 in-distribution but rises to 0.18–0.40 on
-   WildFake, where recall at the 0.5 threshold drops to 44–67% even though
-   AUC holds at 0.91. The ranking transfers; the operating point does not.
-   Any real deployment should re-fit temperature on its own traffic.
+   on SID_Set, so ECE stays ≤0.010 in-distribution but rises to 0.16–0.37 on
+   WildFake, where recall at the 0.5 threshold runs 51–72% even though AUC
+   holds at 0.93 on `laion_matched`. The ranking transfers; the operating
+   point does not. Any real deployment should re-fit temperature on its own
+   traffic.
 5. **Incidental degradation, not adversarial.** The six transforms model a
    redistribution pipeline, not an adversary deliberately evading detection.
 6. **Tampered images are called real.** A photo with a small AI-edited region

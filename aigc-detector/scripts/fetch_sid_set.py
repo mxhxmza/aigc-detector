@@ -55,6 +55,9 @@ LABEL_DIRS = {
     2: "fake/tampered",
 }
 
+# the `kind` build_dataset.py prefixes each placed file with, per label
+KIND_OF = {0: "real", 1: "synthetic", 2: "tampered"}
+
 
 def _save(raw: bytes, path: Path, max_size: int) -> None:
     img = Image.open(io.BytesIO(raw)).convert("RGB")
@@ -78,6 +81,14 @@ def main() -> int:
                          "region). Off by default: keeps the task 'fully "
                          "generated vs real'.")
     ap.add_argument("--max-size", type=int, default=512)
+    ap.add_argument("--batch-rows", type=int, default=32,
+                    help="parquet rows held in memory at once. Each row carries "
+                         "a full-resolution image, so reading a whole shard "
+                         "peaks near 3 GB and gets OOM-killed on a busy machine")
+    ap.add_argument("--placed", type=Path, default=Path("data"),
+                    help="parent of the train/ and test/ dirs build_dataset.py "
+                         "writes; images already there count toward --per-class "
+                         "so a top-up does not re-download them")
     ap.add_argument("--start-shard", type=int, default=0,
                     help="skip the first N shards (use a disjoint range for a "
                          "second, non-overlapping fetch)")
@@ -97,6 +108,19 @@ def main() -> int:
             for p in d.glob("*.png"):
                 have[k] += 1
                 seen.add(p.stem)
+
+    # build_dataset.py moves these images into data/{train,test}/ and removes
+    # --out, so on a top-up run this directory looks empty and every shard
+    # would be re-downloaded and re-decoded from scratch. Counting what has
+    # already been placed makes --per-class mean "this many in total" and
+    # keeps a top-up proportional to what is actually missing.
+    for split_dir in (args.placed / "train", args.placed / "test"):
+        for k in keep:
+            for p in split_dir.rglob(f"{KIND_OF[k]}_*.png"):
+                img_id = p.stem[len(KIND_OF[k]) + 1:]
+                if img_id not in seen:
+                    have[k] += 1
+                    seen.add(img_id)
     if any(have.values()):
         print(f"resuming: already have {have}")
 
@@ -114,27 +138,39 @@ def main() -> int:
             print(f"  shard {shard}: download failed ({exc}); skipping", file=sys.stderr)
             continue
 
-        table = pq.read_table(local, columns=["img_id", "image", "label"])
-        rows = table.to_pylist()
-        # free the pyarrow buffers before decoding a few hundred PNGs
-        del table
-
-        for row in rows:
-            label = row["label"]
-            if label not in keep or have[label] >= target[label]:
-                continue
-            img_id = row["img_id"]
-            if img_id in seen:
-                continue
-            raw = row["image"]["bytes"]
-            try:
-                _save(raw, args.out / LABEL_DIRS[label] / f"{img_id}.png", args.max_size)
-            except Exception as exc:  # noqa: BLE001
-                print(f"  skip {img_id}: {exc}", file=sys.stderr)
-                continue
-            seen.add(img_id)
-            have[label] += 1
-            written += 1
+        # Stream the shard in small batches. `read_table(...).to_pylist()`
+        # materialises all ~844 images at once and peaks near 2.9 GB, which is
+        # enough to get the process OOM-killed on a busy machine -- silently,
+        # with no traceback, so it looks like a network hang. Batches keep the
+        # peak in the low hundreds of MB.
+        try:
+            pf = pq.ParquetFile(local)
+            for batch in pf.iter_batches(batch_size=args.batch_rows,
+                                         columns=["img_id", "image", "label"]):
+                for row in batch.to_pylist():
+                    label = row["label"]
+                    if label not in keep or have[label] >= target[label]:
+                        continue
+                    img_id = row["img_id"]
+                    if img_id in seen:
+                        continue
+                    try:
+                        _save(row["image"]["bytes"],
+                              args.out / LABEL_DIRS[label] / f"{img_id}.png",
+                              args.max_size)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  skip {img_id}: {exc}", file=sys.stderr)
+                        continue
+                    seen.add(img_id)
+                    have[label] += 1
+                    written += 1
+                del batch
+                if all(have[k] >= target[k] for k in keep):
+                    break
+            del pf
+        except Exception as exc:  # noqa: BLE001
+            print(f"  shard {shard}: read failed ({exc}); skipping", file=sys.stderr)
+            continue
 
         rate = written / max(time.time() - t0, 1e-6)
         print(f"shard {shard:3d}/{n_total} | {have} | {rate:.1f} img/s "

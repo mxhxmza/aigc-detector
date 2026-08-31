@@ -1,17 +1,17 @@
 # Error Analysis Note
 
-Split `test` | 2255 images | threshold 0.5
+Split `test` | 3627 images | threshold 0.5
 
-- False positives (real called AI): **7** (0.5% of real images)
-- False negatives (AI called real): **3** (0.4% of AI images)
+- False positives (real called AI): **12** (0.5% of real images)
+- False negatives (AI called real): **1** (0.1% of AI images)
 
 ## Error rate by image kind
 
 | Kind | total | false pos | false neg | error rate |
 |---|---|---|---|---|
-| synthetic | 747 | 0 | 3 | 0.4% |
-| tampered | 744 | 4 | 0 | 0.5% |
-| real | 737 | 3 | 0 | 0.4% |
+| synthetic | 1200 | 0 | 1 | 0.1% |
+| real | 1200 | 6 | 0 | 0.5% |
+| tampered | 1200 | 6 | 0 | 0.5% |
 | hard_real | 27 | 0 | 0 | 0.0% |
 
 ![false positives](fp_grid.png)
