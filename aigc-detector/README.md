@@ -209,12 +209,11 @@ time — they behave like genuine photos, which is the intent.
 `results/error_analysis.md` has the per-kind breakdown; the 27 held-out
 hard-negative crops are scored there too (0 errors).
 
-**Robustness** (1,600-image balanced subsample × 16 transform cells — the
-forensic FFT features are CPU-bound, so the grid is subsampled): clean AUC
-**1.000**, **no cell below 0.999** — JPEG down to q30, blur to σ=2.0,
-downscale to 0.25×, noise to σ=0.1, ±20% colour jitter, 80% crop. Mean AUC
-drop **+0.0002**, worst-case accuracy 0.989, ECE ≤ 0.010 throughout.
-Per-family final score **0.9998**. Full grid in `results/robustness_table.md`.
+**Robustness** (3,627 test images × 16 transform cells): clean AUC **1.000**,
+**no cell below 0.999** — JPEG down to q30, blur to σ=2.0, downscale to
+0.25×, noise to σ=0.1, ±20% colour jitter, 80% crop. Mean AUC drop
+**+0.0002**, worst-case accuracy 0.988, ECE ≤ 0.012 throughout. Per-family
+final score **0.9998**. Full grid in `results/robustness_table.md`.
 
 ### WildFake reference benchmark (never trained on)
 
